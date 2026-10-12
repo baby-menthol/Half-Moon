@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bauhaus Design</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #d3d4d6; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- Palettes ---------- */
+  var PALETTES = [
+    { bg: "#d3d4d6", ink: "#0b0b0c", accent: "#f05a2a" }, // Signal
+    { bg: "#e9e4d8", ink: "#14213d", accent: "#2f5bea" }, // Cobalt
+    { bg: "#d9dccb", ink: "#1f2a1c", accent: "#c8a21a" }, // Moss
+    { bg: "#f0d9d2", ink: "#2a1218", accent: "#d6336c" }, // Blush
+    { bg: "#101114", ink: "#e9e7e1", accent: "#ff6b3d" }  // Night
+  ];
+
+  var S = {
+    palette: 0,
+    cols: 14,        // tiles across the width
+    accent: 12,      // % of cells that turn accent colour
+    rings: 12,       // % of cells with a ringed bauhaus
+    gap: 2,          // seam width in px
+    symmetry: 0,     // 0 none, 1 mirror, 2 quad
+    seed: 2614
+  };
+
+  var cv = document.getElementById("cv");
+  var ctx = cv.getContext("2d");
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* A cell is two bauhaus-discs sharing an axis (stacked or side by side). */
+  function makeCell(rnd) {
+    var r = [rnd(), rnd(), rnd(), rnd(), rnd(), rnd(), rnd(), rnd()];
+    return {
+      kind: r[0] < 0.06 ? "disc" : "pair",
+      axis: r[1] < 0.5 ? 0 : 1,
+      inA: r[2] < 0.7,
+      inB: r[3] < 0.7,
+      ringRoll: r[4],
+      ringWhich: r[5] < 0.5 ? 0 : 1,
+      accRoll: r[6]
+    };
+  }
+
+  var grid = [], gcols = 0, grows = 0, tile = 0, offX = 0, offY = 0;
+  var W = 0, H = 0, dpr = 1;
+  function layout() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    gcols = Math.max(4, Math.round(S.cols));
+    tile = W / gcols;
+    grows = Math.ceil(H / tile) + 1;
+    // centre vertically so crops are even top and bottom
+    offX = 0; offY = (H - grows * tile) / 2;
+    rebuild();
+  }
+
+  function rebuild() {
+    var rnd = mulberry32(S.seed >>> 0);
+    grid = [];
+    var y, x;
+    for (y = 0; y < grows; y++) {
+      var row = [];
+      for (x = 0; x < gcols; x++) row.push(makeCell(rnd));
+      grid.push(row);
+    }
+    applySymmetry();
+    draw();
+  }
+
+  function mirrorH(c) {
+    var m = Object.assign({}, c);
+    if (m.axis === 1) { var t = m.inA; m.inA = m.inB; m.inB = t; m.ringWhich = 1 - m.ringWhich; }
+    return m;
+  }
+  function mirrorV(c) {
+    var m = Object.assign({}, c);
+    if (m.axis === 0) { var t = m.inA; m.inA = m.inB; m.inB = t; m.ringWhich = 1 - m.ringWhich; }
+    return m;
+  }
+  function applySymmetry() {
+    var x, y;
+    if (S.symmetry >= 1) {
+      for (y = 0; y < grows; y++)
+        for (x = 0; x < Math.floor(gcols / 2); x++) grid[y][gcols - 1 - x] = mirrorH(grid[y][x]);
+    }
+    if (S.symmetry >= 2) {
+      for (y = 0; y < Math.floor(grows / 2); y++)
+        for (x = 0; x < gcols; x++) grid[grows - 1 - y][x] = mirrorV(grid[y][x]);
+    }
+  }
+
+  function bauhaus(cx, cy, r, dir, fill) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, dir - Math.PI / 2, dir + Math.PI / 2, false);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  function rings(cx, cy, r, dir, color, n, lw) {
+    ctx.strokeStyle = color; ctx.lineWidth = lw;
+    for (var k = 1; k <= n; k++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * (k / (n + 0.6)), dir - Math.PI / 2, dir + Math.PI / 2, false);
+      ctx.stroke();
+    }
+  }
+  function drawCell(c, ox, oy, p, nRings, lw) {
+    var g = S.gap / 2, R = tile / 2 - g;
+    var accented = c.accRoll < S.accent / 100;
+
+    ctx.save();
+    if (c.kind === "disc") {
+      ctx.beginPath();
+      ctx.arc(ox + tile / 2, oy + tile / 2, R, 0, Math.PI * 2);
+      ctx.fillStyle = (accented || c.accRoll < (S.accent / 100) * 2.2) ? p.accent : p.ink;
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    var hs = [], s = tile;
+    if (c.axis === 0) {
+      hs.push({ cx: ox + s / 2, cy: c.inA ? oy : oy + s / 2, dir: c.inA ? Math.PI / 2 : -Math.PI / 2 });
+      hs.push({ cx: ox + s / 2, cy: c.inB ? oy + s : oy + s / 2, dir: c.inB ? -Math.PI / 2 : Math.PI / 2 });
+    } else {
+      hs.push({ cx: c.inA ? ox : ox + s / 2, cy: oy + s / 2, dir: c.inA ? 0 : Math.PI });
+      hs.push({ cx: c.inB ? ox + s : ox + s / 2, cy: oy + s / 2, dir: c.inB ? Math.PI : 0 });
+    }
+    var ringedCell = !accented && c.ringRoll < S.rings / 100;
+    if (!c.inA && !c.inB && !ringedCell) {
+      // two outward halves touch at the centre line: draw one disc, no hairline
+      ctx.beginPath();
+      ctx.arc(ox + s / 2, oy + s / 2, R, 0, Math.PI * 2);
+      ctx.fillStyle = accented ? p.accent : p.ink;
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    for (var h = 0; h < 2; h++) {
+      var hv = hs[h];
+      bauhaus(hv.cx, hv.cy, R, hv.dir, accented ? p.accent : p.ink);
+      if (!accented && c.ringRoll < S.rings / 100 && c.ringWhich === h) {
+        rings(hv.cx, hv.cy, R, hv.dir, p.bg, nRings, lw);
+      }
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    var p = PALETTES[S.palette] || PALETTES[0];
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = p.bg;
+    ctx.fillRect(0, 0, W, H);
+    document.body.style.background = p.bg;
+    var lw = Math.max(0.8, tile / 70);
+    var nRings = Math.max(4, Math.round(tile / 9));
+    for (var y = 0; y < grows; y++)
+      for (var x = 0; x < gcols; x++)
+        drawCell(grid[y][x], offX + x * tile, offY + y * tile, p, nRings, lw);
+  }
+
+  /* ---------- Wallpaper Engine properties ---------- */
+  window.wallpaperPropertyListener = {
+    applyUserProperties: function (pr) {
+      var relayout = false, rebuilt = false, redraw = false;
+      if (pr.palette)  { S.palette = parseInt(pr.palette.value, 10); redraw = true; }
+      if (pr.cols)     { S.cols = pr.cols.value; relayout = true; }
+      if (pr.seed)     { S.seed = Math.round(pr.seed.value); rebuilt = true; }
+      if (pr.symmetry) { S.symmetry = parseInt(pr.symmetry.value, 10); rebuilt = true; }
+      if (pr.accent)   { S.accent = pr.accent.value; redraw = true; }
+      if (pr.rings)    { S.rings = pr.rings.value; redraw = true; }
+      if (pr.gap)      { S.gap = pr.gap.value; redraw = true; }
+      if (relayout) layout();
+      else if (rebuilt) rebuild();
+      else if (redraw) draw();
+    }
+  };
+
+  window.addEventListener("resize", layout);
+  layout();
+})();
+</script>
+</body>
+</html>
